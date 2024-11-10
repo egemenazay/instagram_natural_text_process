@@ -1,18 +1,19 @@
-﻿import pandas as pd
+import requests
+import pandas as pd
 import re
 import nltk
 import spacy
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.cluster import KMeans
+nlp = spacy.load("en_core_web_sm")  # İngilizce metin işlemek için sPacy modelini yüklüyorum
 
-nlp = spacy.load("en_core_web_sm")
 
 df = pd.read_excel("instagram_only_comments.xlsx")            # Bu satırlarda Excel dosyasındaki metinleri alıp
 texts = df['text'].tolist()                                   # Python içerisinde Array'e dönüştürüyorum
 
-texts[:] = [text if isinstance(text, str) else "" for text in texts]       # String gözükmeyen değerleri yok ediyorum
+texts[:] = [text if isinstance(text, str) else "" for text in texts]      # String gözükmeyen değerleri yok ediyorum
 
-combined_text = " ".join(texts)
-
-# Bu alanda metinler içerisindeki emojilerden kurtulan metodu oluşturuyorum
+# Bu alanda metinler içerisindeki emojilerden kurtulan fonksiyonu oluşturuyorum
 def remove_emojis(text):
     emoji_pattern = re.compile(
         "["
@@ -32,31 +33,67 @@ def remove_emojis(text):
     )
     return emoji_pattern.sub(r'', text)
 
-combined_text = str(combined_text).lower()                          # Metinler içindeki bütün kelimeleri küçük harfe çeviriyorum
-combined_text = remove_emojis(combined_text)                        # Metin içindeki emojileri yok ediyorum
-combined_text = re.sub(r'[^\w\s]', '', combined_text)  # Noktalama işaretlerini kaldırıyorum
-
-# Tokenization işlemi
-nltk.download('punkt_tab')
-tokens = nltk.word_tokenize(combined_text)
-
-# Kelimeleri "Lemmatization" yani sadeleştirme işelmi. ÖRNEK: "Wheres" -> "where" "s"
-doc = nlp(" ".join(tokens))
-tokens = [token.lemma_ for token in doc]
-
-# Stopword çıkarma işlemi
-nltk.download('stopwords')
-stop_words = set(nltk.corpus.stopwords.words('english'))
+# Veri setim İngilizce olduğu için İngilizce stopword'leri içeren verileri çekiyorum
+stopwords_list = requests.get("https://gist.githubusercontent.com/rg089/35e00abf8941d72d419224cfd5b5925d/raw/12d899b70156fd0041fa9778d657330b024b959c/stopwords.txt").content
+stop_words = set(stopwords_list.decode().splitlines())
 stop_words.add('I')
-tokens = [word for word in tokens if word not in stop_words]
+
+# Tokenizasyon işlemi için 'Natural Language Processing Toolkit' üzerinden Tokenizasyon işlemi için gerekli metodları yüklüyorum
+nltk.download('punkt_tab')
+
+def preprocess_text(text):
+    # Kelimeleri küçük harfe çeviriyorum
+    text = text.lower()
+    # Emojileri kaldırıyorum
+    text = remove_emojis(text)
+    # Noktalama işaretlerini kaldırıyorum
+    text = re.sub(r'[^\w\s]', '', text)
+    # Tokenizasyon işlemini yapıyorum
+    tokens = nltk.word_tokenize(text)
+    # 'Stopword'leri çıkarıyorum
+    tokens = [word for word in tokens if word not in stop_words]
+    # Kelimeleri sadeleştiriyorum
+    doc = nlp(" ".join(tokens))
+    tokens = [token.lemma_ for token in doc]
+    # Sayıları kaldırıyorum
+    tokens = [re.sub(r'\d+', '', token) for token in tokens]
+    # Boş Token'leri kaldırıyorum
+    tokens = [token for token in tokens if token]
+    return tokens
+
+processed_texts = [preprocess_text(text) for text in texts]
+
+# Her bir veri için token'leri tekrar birleştiriyorum
+texts_as_strings = [" ".join(text) for text in processed_texts]
+
+# Bütün işlemler sonrası boş kalan verileri kaldırıyorum
+cleaned_list = pd.Series(texts_as_strings).dropna()
+cleaned_list = cleaned_list[cleaned_list != ""].tolist()
+
+# DataFrame oluşturup Excel dosyasına gönderiyorum
+cleaned_texts_df = pd.DataFrame(cleaned_list)
+cleaned_texts_df.to_excel("instagram_cleanedup_data.xlsx", index=False)
+
+# Hazırladığım verileri kullanarak TF-IDF matrisini oluşturuyorum
+tfidf_vectorizer = TfidfVectorizer()
+tfidf_matrix = tfidf_vectorizer.fit_transform(cleaned_list)
+
+# TF-IDF matrisini kullanarak K-Kümeleme yöntemiyle 3 kümeye ayırıyorum
+num_clusters = 3  # You can adjust the number of clusters as needed
+kmeans = KMeans(n_clusters=num_clusters, random_state=42)
+kmeans.fit(tfidf_matrix)
+
+# Küme verilerini alıyorum
+labels = kmeans.labels_
+
+# Kümelenmiş verileri DataFrame oluşturup Excel'e aktarıoyrum
+cluster_df = pd.DataFrame({
+    "Document": cleaned_list,
+    "Cluster": labels
+})
+cluster_df.to_excel("k_means_cluster_results.xlsx", index=False)
 
 
-tokens = [re.sub(r'\d+', '', token) for token in tokens]
 
-tokens = [token for token in tokens if token != ""]
 
-tokensdf = pd.DataFrame(tokens, columns=['Tokens'])
-tokensdf.to_excel("instagram_post_comments_preprocessed.xlsx", index=False)
-
-print(tokens)
 
